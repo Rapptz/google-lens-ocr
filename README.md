@@ -19,6 +19,12 @@ Copy to clipboard:
 $ google-lens-ocr clipboard image.png
 ```
 
+You can also use the image in the clipboard by not specifying a file:
+
+```shell
+$ google-lens-ocr clipboard
+```
+
 That's it.
 
 ## License

@@ -2,13 +2,13 @@ use std::{env::args_os, io::Cursor, path::PathBuf, sync::OnceLock, time::SystemT
 
 use anyhow::{bail, Context};
 use arboard::Clipboard;
-use image::RgbImage;
+use image::RgbaImage;
 use regex::Regex;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 enum Command {
     Normal(PathBuf),
-    Clipboard(PathBuf),
+    Clipboard(Option<PathBuf>),
 }
 
 impl Command {
@@ -16,10 +16,7 @@ impl Command {
         let mut args = args_os();
         args.next(); // skip argv[0]
         match args.next() {
-            Some(s) if s == "clipboard" => args
-                .next()
-                .map(|s| Self::Clipboard(PathBuf::from(s)))
-                .ok_or(anyhow::anyhow!("missing file to use OCR with")),
+            Some(s) if s == "clipboard" => Ok(Self::Clipboard(args.next().map(PathBuf::from))),
             Some(s) => Ok(Self::Normal(PathBuf::from(s))),
             None => anyhow::bail!("missing file to use OCR with"),
         }
@@ -42,7 +39,7 @@ fn get_regex() -> &'static Regex {
 
 const BOUNDARY: &str = "ZPJQvnUMIqajI5LbS8cc5w";
 
-fn maybe_resize_image(img: RgbImage) -> RgbImage {
+fn maybe_resize_image(img: RgbaImage) -> RgbaImage {
     if img.width() * img.height() > 3_000_000 {
         let aspect_ratio = img.width() as f64 / img.height() as f64;
         let nwidth = ((3_000_000f64 * aspect_ratio).sqrt()) as u32;
@@ -70,12 +67,20 @@ fn create_multipart_form(filename: &str, img: &[u8]) -> Vec<u8> {
     buffer
 }
 
-fn run_ocr(path: PathBuf) -> anyhow::Result<String> {
-    let img = maybe_resize_image(
-        image::open(path)
-            .context("Could not open image")?
-            .into_rgb8(),
-    );
+fn load_image(path: PathBuf) -> anyhow::Result<RgbaImage> {
+    Ok(image::open(path)
+        .context("Could not open image")?
+        .into_rgba8())
+}
+
+fn load_image_from_clipboard(clipboard: &mut Clipboard) -> anyhow::Result<RgbaImage> {
+    let img = clipboard.get_image().context("clipboard has no image")?;
+    RgbaImage::from_vec(img.width as u32, img.height as u32, img.bytes.into_owned())
+        .context("buffer was not big enough somehow")
+}
+
+fn run_ocr(img: RgbaImage) -> anyhow::Result<String> {
+    let img = maybe_resize_image(img);
     let mut bytes = Vec::new();
     img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)?;
 
@@ -124,12 +129,17 @@ fn main() -> anyhow::Result<()> {
     let command = Command::new()?;
     match command {
         Command::Normal(path) => {
-            let result = run_ocr(path)?;
+            let image = load_image(path)?;
+            let result = run_ocr(image)?;
             println!("{result}\n");
         }
         Command::Clipboard(path) => {
             let mut clipboard = Clipboard::new().context("Could not open clipboard")?;
-            let result = run_ocr(path)?;
+            let image = match path {
+                Some(path) => load_image(path)?,
+                None => load_image_from_clipboard(&mut clipboard)?,
+            };
+            let result = run_ocr(image)?;
             clipboard
                 .set_text(result)
                 .context("Could not set clipboard contents")?;
